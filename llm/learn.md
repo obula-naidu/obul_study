@@ -602,49 +602,470 @@ def call_llm_with_retry(fn, retries=5):
 
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
-PHASE 4: Embeddings & RAG
+PART A — Embeddings (Foundation)
 
-Goal: Make LLMs “know things”
+11.1 What embeddings are and token vs embeddings
+An embedding is a numerical vector that represents meaning.
 
-1️⃣1️⃣ Embeddings
+Not text.
+Not tokens.
+Meaning.
 
-What vectors are
+Why embeddings exist
 
-Why cosine similarity
+LLMs:
 
-1️⃣2️⃣ Vector databases
+Generate text
+Are bad at searching large knowledge bases
 
-FAISS
+Embeddings:
+    Convert text → numbers
+    Enable similarity search
 
-Chroma
+Example (conceptual)
+"FastAPI is a Python framework"
+→ [0.13, -0.44, 0.82, ..., 0.09]  (1536 dimensions)
+These vectors are close in space.
 
-When to use which
+What vectors actually encode
 
-1️⃣3️⃣ RAG flow
+They encode:
+    Topic
+    Intent
+    Semantics
+    Relationships
 
-Chunking
+They do ❌ NOT encode:
+    Grammar
+    Exact wording
+    Order (mostly)
 
-Retrieval
+| Concept    | Purpose            |
+| ---------- | ------------------ |
+| Tokens     | Generation         |
+| Embeddings | Search & retrieval |
 
-Augmented prompting
+Embeddings turn meaning into geometry.
+
+❌ Embeddings are not model parameters
+❌ Embeddings are not learned per query
+❌ Embeddings are not context windows
+They are outputs of a trained embedding model.
+
+
+Where embeddings live in RAG
+Docs → embeddings → vector DB
+Query → embedding → similarity search
+Top chunks → prompt → LLM
+
+Where embeddings live in RAG
+Docs → embeddings → vector DB
+Query → embedding → similarity search
+Top chunks → prompt → LLM
+
+Why embeddings make LLMs “know things”
+LLMs:
+    Don’t store your documents
+RAG:
+    Retrieves relevant docs at runtime
+    Injects them into prompt
+
+Knowledge is externalized
+
+11.2 Embedding models and Dimensionality
+
+What is an embedding model?
+An embedding model is a neural network trained to map text → vectors such that semantic similarity = geometric closeness.
+📌 Different from a chat/generation model.
+
+How embedding models are trained (conceptual)
+
+They are trained on:
+    Sentence pairs
+    Question–answer pairs
+    Paraphrases
+    Contrastive learning
+
+Training goal:
+    similar meaning → vectors close
+    different meaning → vectors far
+
+Types of embedding models
+🔹 Proprietary (Cloud)
+    OpenAI text-embedding-3-large
+    Cohere
+    Google
+
+🔹 Open-source
+    SentenceTransformers
+    BGE (BAAI)
+    E5
+    GTE
+    Instructor models
+
+🔹 Local (Ollama)
+    nomic-embed-text
+    mxbai-embed-large
+    bge-base
+
+Dimensionality
+| Model        | Dimensions |
+| ------------ | ---------- |
+| OpenAI small | 768        |
+| OpenAI large | 3072       |
+| BGE-base     | 768        |
+| BGE-large    | 1024       |
+| nomic        | 768        |
+
+| Lower dim   | Higher dim    |
+| ----------- | ------------- |
+| Faster      | More accurate |
+| Less memory | Better nuance |
+| Cheaper     | Slower        |
+768–1024 is the industry sweet spot.
+
+One crucial rule (people mess this up)
+Query and documents MUST use the same embedding model.
+Mixing models = broken similarity search.
+
+Embedding normalization
+
+Most models output vectors that are:
+    Already normalized OR
+    Should be normalized
+Why?
+    Makes cosine similarity stable
+    Improves indexing
+Many vector DBs auto-normalize.
+
+When embeddings FAIL
+    Very short queries (“yes”, “ok”)
+    Exact keyword search
+    Numbers / IDs
+    Highly structured data
+
+Use hybrid search (later topic).
+
+Mental model
+    Embedding model = semantic encoder
+    Vector DB = memory
+    LLM = reasoning engine
+
+11.4 Similarity metrics (cosine, dot, L2)
+Why similarity metrics exist
+Once you have embeddings (vectors), you need to answer:
+    “How close are these two meanings?”
+    That’s what similarity metrics do.
+
+1️⃣ The three main similarity metrics
+| Metric                  | Used for       |
+| ----------------------- | -------------- |
+| Cosine similarity       | Most common    |
+| Dot product             | Fast, ranking  |
+| L2 (Euclidean) distance | Geometry-based |
+
+Cosine similarity (most important)
+Measures the angle between two vectors, not their length.
+
+Why cosine is king 👑
+Ignores magnitude
+Focuses on direction (meaning)
+Stable across embedding models
+Works well with normalized vectors
+
+📌 Most embedding models are trained expecting cosine similarity.
+
+| Cosine value | Meaning           |
+| ------------ | ----------------- |
+| 1.0          | Identical meaning |
+| 0.8          | Very similar      |
+| 0.5          | Somewhat related  |
+| 0.0          | Unrelated         |
+| -1.0         | Opposite meaning  |
+
+Dot product
+Measures both direction and magnitude
+
+When dot product is used
+    Vectors are normalized
+    Speed is critical
+    Ranking is more important than exact similarity
+
+📌 If vectors are normalized:
+dot product ≈ cosine similarity
+That’s why some DBs use dot product internally.
+
+2 (Euclidean) distance
+Straight-line distance between vectors
+
+Why L2 is less popular
+    Sensitive to magnitude
+    Worse semantic behavior
+    Less aligned with training objectives
+
+Used mostly in:
+    Vision models
+    Older embedding systems
+
+Why cosine works best for text
+
+Text meaning is:
+    Directional
+    Relative
+    Scale-independent
+
+Cosine captures exactly that.
+
+Vector DB perspective
+
+Most vector DBs support all metrics, but:
+| DB       | Default       |
+| -------- | ------------- |
+| FAISS    | Inner product |
+| Chroma   | Cosine        |
+| Pinecone | Cosine        |
+| Weaviate | Cosine        |
+
+Common mistake (critical)
+
+❌ Using cosine on non-normalized vectors
+❌ Mixing similarity metrics between indexing & querying
+
+📌 Index metric == query metric (must match).
+
+Meaning = direction
+Similarity = angle
+Cosine = angle comparison
+
+What “dimension” really means
+    One dimension = one learned semantic feature
+An embedding of size 768 means:
+    768 independent semantic signals
+Not human-interpretable, but statistically meaningful.
+
+Why embeddings have FIXED size
+Neural networks require:
+    Fixed input size
+    Fixed output size
+So:
+    Any text length → same-size vector
+
+That’s why:
+1 sentence
+1 paragraph
+1 page
+All become 768 numbers (for that model).
+
+Why not 10 dimensions? Why not 1 million?
+Too few dimensions
+    Can’t represent nuance
+    Many meanings collapse together
+    Poor retrieval quality
+
+Too many dimensions
+    Slow search
+    High memory
+    Harder indexing
+    Diminishing returns
+
+Why 768 / 1024 became standard
+These numbers come from:
+    Transformer hidden sizes
+    Powers of 2
+    Hardware efficiency
+
+Example:
+
+| Model family | Hidden size |
+| ------------ | ----------- |
+| BERT-base    | 768         |
+| RoBERTa      | 768         |
+| BGE-base     | 768         |
+| BGE-large    | 1024        |
+
+
+📌 Embedding head often mirrors hidden size.
+
+Curse of dimensionality (important)
+
+As dimensions increase:
+    Distance between points becomes less meaningful
+    Everything starts to look “far”
+    Indexing gets harder
+
+Vector DBs combat this with:
+    Approximate nearest neighbor (ANN)
+    Quantization
+    Clustering
+
+Practical tradeoffs
+| Use case              | Recommended dims |
+| --------------------- | ---------------- |
+| Small app             | 384–768          |
+| RAG systems           | 768–1024         |
+| High-precision search | 1024–1536        |
+| Edge / mobile         | ≤384             |
+
+Can you reduce dimensions?
+Yes:
+    PCA
+    Autoencoders
+    Quantization
+
+But:
+❌ usually hurts retrieval
+✔️ useful for memory-constrained systems
+
+Mental model
+
+Dimensions = semantic resolution
+More dims = sharper meaning
+Fewer dims = blurrier meaning
+
+When Embeddings FAIL
+This task explains why RAG systems sometimes give bad answers even with embeddings.
+
+Embeddings are semantic, not factual.
+They capture meaning similarity, not truth or exactness.
+
+Major failure cases
+1. Very short queries
+Examples:
+“yes”
+“ok”
+“why?”
+➡️ Too little semantic signal
+➡️ Vectors are noisy
+Fix: Expand query or use conversation context.
+
+2. Keyword-heavy queries
+Examples:
+    Error codes (ERR_CONN_RESET)
+    IDs (order_839201)
+    File names
+Embeddings blur exact tokens.
+Fix: Keyword search or hybrid search.
+
+3. Numerical & tabular data
+Examples:
+    Prices
+    Dates
+    Metrics
+Embeddings don’t preserve numeric precision.
+Fix: Structured DB + RAG.
+
+4. Domain mismatch
+Embedding model not trained on:
+    Telecom logs
+    Kernel traces
+    Medical codes
+➡️ Similarity becomes meaningless.
+Fix: Domain-specific embeddings.
+
+5. Long documents, bad chunking
+    Important info split across chunks
+    Context lost
+Fix: Smarter chunking (next section).
+
+6. False positives (semantic drift)
+Query:
+“How to reset router?”
+Retrieved:
+“How to restart application”
+
+Semantically similar but wrong.
+
+Why embeddings don’t “understand”
+They optimize:
+similar meaning → close vectors
+
+They do NOT optimize:
+    Logical correctness
+    Temporal truth
+    Causality
+That’s LLM’s job.
+
+4️⃣ Warning sign in RAG
+
+If your RAG answers:
+    Confidently wrong
+    With irrelevant citations
+➡️ Retrieval is broken, not generation.
+
+Embeddings vs search engines
+| Feature     | Embeddings | Keyword search |
+| ----------- | ---------- | -------------- |
+| Semantic    | ✅          | ❌              |
+| Exact match | ❌          | ✅              |
+| Numbers     | ❌          | ✅              |
+| Speed       | Medium     | Fast           |
+
+➡️ That’s why hybrid search exists.
+
+ Mental model
+Embeddings = fuzzy semantic lens
+Keyword search = sharp literal lens
+
+Best systems use both.
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+🔜 NEXT PHASE — PART B
+🧩 TASK 12.1 — Vector Databases (What & Why)
+
+Why we need vector DBs
+
+Why SQL isn’t enough
+
+ANN indexing basics
+
+Say “next” to continue.
+
+
+
+PART B — Vector Databases
+
+12️⃣ Vector stores
+12.1 Indexing methods
+12.2 FAISS (in-memory, performance)
+12.3 Chroma (metadata + dev)
+12.4 Alternatives (Pinecone, Weaviate, Milvus, pgvector)
+12.5 When to use what
+
+PART C — RAG (Core System)
+
+13️⃣ RAG architecture
+13.1 Chunking strategies
+13.2 Retrieval strategies
+13.3 Augmented prompting
+13.4 Context window budgeting
+13.5 Failure modes
+
+PART D — Advanced RAG (Production)
+
+14️⃣ Improvements & alternatives
+14.1 Hybrid search
+14.2 Re-ranking
+14.3 Multi-query RAG
+14.4 Agentic RAG
+14.5 RAG vs Fine-tuning
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 PHASE 5: Agents (RAIN / AIRA level)
 
 Goal: Production AI systems
 
-1️⃣4️⃣ What is an agent
+1️⃣5️⃣ What is an agent
 
 Tools vs agents
 
 Decision loops
 
-1️⃣5️⃣ Tool calling
+1️⃣6️⃣ Tool calling
 
 Function schemas
 
 Controlled outputs
 
-1️⃣6️⃣ Memory types
+1️⃣7️⃣ Memory types
 
 Short-term (context)
 
@@ -654,25 +1075,25 @@ PHASE 6: Production & System Design
 
 Goal: Real-world readiness
 
-1️⃣7️⃣ FastAPI + LLM
+1️⃣8️⃣ FastAPI + LLM
 
 API wrappers
 
 Streaming via SSE
 
-1️⃣8️⃣ Security
+1️⃣9️⃣ Security
 
 API keys
 
 Environment variables
 
-1️⃣9️⃣ Cost & performance
+2️⃣0️⃣ Cost & performance
 
 Tokens = money
 
 Latency tradeoffs
 
-2️⃣0️⃣ Evaluation & logging
+2️⃣1️⃣ Evaluation & logging
 
 Prompt versioning
 
