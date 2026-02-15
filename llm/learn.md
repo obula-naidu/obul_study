@@ -1009,28 +1009,933 @@ Keyword search = sharp literal lens
 Best systems use both.
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-🔜 NEXT PHASE — PART B
-🧩 TASK 12.1 — Vector Databases (What & Why)
-
-Why we need vector DBs
-
-Why SQL isn’t enough
-
-ANN indexing basics
-
-Say “next” to continue.
-
-
-
 PART B — Vector Databases
+------------------------
 
-12️⃣ Vector stores
-12.1 Indexing methods
-12.2 FAISS (in-memory, performance)
-12.3 Chroma (metadata + dev)
-12.4 Alternatives (Pinecone, Weaviate, Milvus, pgvector)
-12.5 When to use what
+Why do we even need Vector Databases?
 
+LLMs don’t “search text” — they compare meanings.
+When you embed text, you convert it into a vector
+
+Now imagine:
+1 question embedding
+1 million document embeddings
+
+To answer:
+👉 “Which documents are semantically closest?”
+
+That is vector similarity search, not keyword search.
+
+What happens without a vector DB?
+for each vector in database:
+    compute similarity
+O(N × D)
+N = number of vectors
+D = embedding dimensions
+With:
+N = 1,000,000
+D = 768
+❌ Too slow
+❌ Too expensive
+❌ Not scalable
+What a Vector DB gives you
+A vector database:
+    Stores embeddings efficiently
+    Builds ANN indexes (Approximate Nearest Neighbor)
+    Finds top-K closest vectors in milliseconds
+    Handles metadata filtering
+    Scales to millions/billions of vectors
+
+Key idea
+We trade perfect accuracy for massive speed gains
+
+Why SQL / Traditional DBs aren’t enough
+SQL is great at:
+| Task                   | Works? |
+| ---------------------- | ------ |
+| `WHERE age > 30`       | ✅      |
+| `JOIN users ON orders` | ✅      |
+| Exact match            | ✅      |
+| Range queries          | ✅      |
+
+SQL is terrible at:
+| Task                      | Why                |
+| ------------------------- | ------------------ |
+| Semantic similarity       | No vector math     |
+| High-dim cosine search    | No native ANN      |
+| Scaling similarity search | Full table scans   |
+| Top-K nearest neighbors   | Brutal performance |
+Even if you store vectors as arrays:
+SELECT * FROM docs
+ORDER BY cosine_similarity(vec, query_vec)
+LIMIT 5;
+This forces full scan every time.
+
+| Traditional DB  | Vector DB            |
+| --------------- | -------------------- |
+| Structured data | Unstructured meaning |
+| Exact logic     | Fuzzy similarity     |
+| Rows & columns  | Points in space      |
+| Deterministic   | Probabilistic        |
+
+
+What is ANN (Approximate Nearest Neighbor)?
+Exact Nearest Neighbor (ENN)
+    Computes distance to every vector
+    Accurate
+    Unusable at scale
+
+ANN (what everyone uses)
+    Uses clever indexing tricks
+    Narrows search space
+    Finds very close neighbors (not mathematically perfect)
+    100×–1000× faster
+
+Important truth
+In RAG, “almost correct” retrieval is MORE than enough
+LLMs are robust to slight noise.
+
+ANN Indexing — Core intuition (NO math yet)
+Imagine vectors as points in space.
+ANN tries to answer:
+“Which small region of space should I search instead of everything?”
+
+Common ANN ideas (high-level)
+1️⃣ Space partitioning
+    Divide vector space into regions
+    Only search nearby regions
+
+2️⃣ Graph-based navigation
+    Each vector links to neighbors
+    Traverse graph from entry point
+
+3️⃣ Clustering
+    Group similar vectors
+    Search only top clusters
+
+Why ANN indexing is a separate step
+Text → Embedding → Normalize → Store → Index → Search
+
+Key rules:
+    Indexing is built after vectors are stored
+    Index depends on:
+        Distance metric (cosine / L2 / dot)
+        Vector dimension
+        Dataset size
+
+If you:
+    Change embedding model ❌
+    Change normalization ❌
+    Change distance metric ❌
+➡️ Rebuild 
+
+Types of Vector Databases (preview)
+
+FAISS → fastest, in-memory
+Chroma → dev-friendly, metadata
+Pinecone → managed, scalable
+Weaviate → schema + hybrid search
+Milvus → massive scale
+PostgreSQL + pgvector → SQL + vectors
+
+Indexing Methods (ANN Deep Dive)
+You have:
+    N vectors (documents)
+    1 query vector
+    A distance metric (cosine / L2 / dot)
+Goal:
+    Find top-K closest vectors without scanning all N
+Indexing answers:
+    “Which small subset of vectors should I even look at?”
+
+1️⃣ Flat Index (Baseline — No ANN)
+What it is
+    Store vectors as-is
+    On search → compare against every vector
+    Complexity:O(N × D)
+
+Pros
+✅ Exact results
+✅ Simple
+✅ No preprocessing
+Cons
+❌ Extremely slow at scale
+❌ No pruning
+
+When it’s used
+    N < 10k
+    Evaluation / testing
+    Gold-standard accuracy checks
+
+📌 Important:
+Every ANN index is compared against Flat for accuracy
+
+2️⃣ IVF — Inverted File Index (Clustering-based)
+Core idea
+“Don’t search everywhere — search only relevant clusters”
+Step 1: Train centroids
+    Run k-means on vectors
+    Produce nlist centroids
+Step 2: Assign vectors
+    Each vector goes to nearest centroid.
+        Centroid A → [v1, v7, v103]
+        Centroid B → [v2, v9, v55]
+Step 3: Query time
+    Embed query
+    Find nearest nprobe centroids
+    Search only vectors inside those centroids
+
+| Parameter | Meaning                     |
+| --------- | --------------------------- |
+| `nlist`   | Number of clusters          |
+| `nprobe`  | How many clusters to search |
+
+Pros
+✅ Massive speedup
+✅ Good for millions of vectors
+✅ Tunable accuracy
+Cons
+❌ Needs training
+❌ Bad if clusters are poor
+❌ Recall depends on nprobe
+
+Where IVF shines
+    Large static datasets
+    Embeddings don’t change often
+    Disk-backed indexes
+
+3️⃣ HNSW — Hierarchical Navigable Small World Graph
+Core idea
+“Vectors form a graph; similar vectors are neighbors”
+
+Instead of clustering, HNSW:
+    Builds a multi-layer graph
+    Higher layers = fewer nodes
+    Lower layers = dense connections
+
+Layer 3 (sparse)
+   ↓
+Layer 2
+   ↓
+Layer 1
+   ↓
+Layer 0 (dense, full graph)
+
+Query process
+    Start at top layer
+    Greedily move to closer neighbors
+    Drop down layers
+    Final fine search at bottom
+🚀 No clustering. No scanning. Just graph traversal.
+
+| Parameter        | Meaning                      |
+| ---------------- | ---------------------------- |
+| `M`              | Number of neighbors per node |
+| `efConstruction` | Index build quality          |
+| `efSearch`       | Search accuracy vs speed     |
+
+Bigger efSearch = better recall
+Pros
+✅ Extremely fast
+✅ High recall
+✅ No training step
+✅ Dynamic inserts supported
+Cons
+❌ High memory usage
+❌ Complex internals
+
+HNSW is the default choice unless you have a strong reason not to
+Most modern vector DBs use HNSW internally.
+
+4️⃣ PQ — Product Quantization (Compression)
+Core idea
+“Store approximate vectors using fewer bytes”
+
+How PQ works
+    Split vector into sub-vectors
+    Quantize each part separately
+    Store codes instead of floats
+Example:
+    768-d float vector → ~3KB
+    PQ compressed → ~64–128 bytes
+
+Why PQ exists
+    Memory is expensive
+    Disk I/O is slow
+    PQ allows billions of vectors
+
+| Aspect   | Result          |
+| -------- | --------------- |
+| Memory   | 🔥 Huge win     |
+| Speed    | 🔥 Faster cache |
+| Accuracy | ❌ Some loss     |
+
+PQ is rarely used alone
+Usually combined with IVF: IVF+PQ
+
+Hybrid indexes
+| Combo          | Why                   |
+| -------------- | --------------------- |
+| Flat           | Ground truth          |
+| IVF            | Large datasets        |
+| HNSW           | High recall + speed   |
+| IVF + PQ       | Massive scale         |
+| HNSW + filters | Metadata-aware search |
+
+Distance metrics & indexing compatibility
+This is critical.
+| Metric      | Notes                         |
+| ----------- | ----------------------------- |
+| Cosine      | Requires normalization        |
+| Dot product | Often with normalized vectors |
+| L2          | Raw vectors                   |
+
+FAISS is NOT just a vector DB.
+It is a library of ANN indexes.
+It provides:
+    Flat
+    IVF
+    PQ
+    IVFPQ
+    HNSW
+Most vector databases internally use FAISS or FAISS-like algorithms.
+
+Accuracy vs speed vs memory triangle
+You can only optimize two:
+| Optimize          | Sacrifice |
+| ----------------- | --------- |
+| Speed + Accuracy  | Memory    |
+| Speed + Memory    | Accuracy  |
+| Accuracy + Memory | Speed     |
+ANN is engineering tradeoffs, not magic.
+
+FAISS
+(In-memory ANN engine, performance king)
+What exactly is FAISS?
+
+FAISS = Facebook AI Similarity Search
+Important correction to lock in:
+    FAISS is NOT a database
+    FAISS is an ANN indexing + search library
+
+It does:
+    Vector storage (in RAM / mmap)
+    ANN indexing
+    Ultra-fast similarity search
+
+It does NOT:
+    Handle metadata well
+    Do filtering
+    Handle persistence like a DB
+    Provide auth / scaling / replication
+FAISS = engine, not platform.
+
+Why FAISS exists (the real reason)
+Before FAISS:
+    Academic ANN code
+    Inconsistent performance
+    No GPU support
+    Hard to scale beyond millions
+
+FAISS solved:
+    High-dimensional similarity search
+    CPU + GPU acceleration
+    Pluggable index types
+    Production-grade speed
+Today: Almost every vector DB is either built on FAISS or re-implements its ideas
+
+FAISS architecture
+Embeddings (float vectors)
+        ↓
+FAISS Index
+   ├─ Flat
+   ├─ IVF
+   ├─ HNSW
+   ├─ PQ / IVFPQ
+        ↓
+Top-K IDs + distances
+
+FAISS does only one thing:
+Given a query vector → return nearest vector IDs
+
+Core FAISS index types (what actually matters)
+1️⃣ IndexFlat (Exact)
+        IndexFlatL2
+        IndexFlatIP
+    No ANN
+    Exact search
+    Baseline
+Use when:
+    Small dataset
+    Measuring recall
+
+2️⃣ IndexIVFFlat
+        IndexIVFFlat(quantizer, d, nlist)
+    IVF clustering
+    Flat vectors inside clusters
+Key params:
+    nlist → number of clusters
+    nprobe → clusters searched at query
+
+Good for:
+    Millions of vectors
+    Disk-backed indexes
+
+3️⃣ IndexHNSWFlat
+        IndexHNSWFlat(d, M)
+    Graph-based ANN
+    Very fast
+    High recall
+Use when:
+    Low latency matters
+    RAM is available
+    Dynamic inserts needed
+
+4️⃣ IndexIVFPQ (Scale monster)
+        IndexIVFPQ(d, nlist, m, nbits)
+    IVF + Product Quantization
+    Massive compression
+Use when:
+    Tens / hundreds of millions
+    Memory constrained
+
+FAISS + Distance metrics (CRITICAL)
+FAISS supports:
+    L2
+    Inner Product (dot)
+📌 Cosine similarity is NOT native
+Cosine trick:
+    Normalize vectors → use dot product
+
+If you forget normalization:
+❌ Garbage results
+❌ Silent failure (no error)
+
+GPU FAISS (why it’s special)
+FAISS GPU:
+    Runs ANN search on GPU
+    Blazing fast for large batches
+    Used by Meta, Google-scale systems
+
+Tradeoff:
+    GPU memory limits
+    Transfer overhead
+    Harder to deploy
+
+Used when:
+    High QPS
+    Batch queries
+    Embedding pipelines on GPU
+
+FAISS lifecycle in real RAG systems
+    Typical flow
+    1. Embed documents
+    2. Normalize embeddings
+    3. Add to FAISS index
+    4. Build index (train if needed)
+    5. Save index to disk
+At query time:
+    Query → embed → normalize → FAISS.search → IDs
+
+Why FAISS is NOT enough alone
+| Feature            | FAISS     |
+| ------------------ | --------- |
+| Metadata filtering | ❌         |
+| Persistence        | ⚠️ manual |
+| Distributed search | ❌         |
+| REST API           | ❌         |
+| Multi-tenant       | ❌         |
+
+
+That’s why people wrap FAISS inside:
+Chroma
+Weaviate
+Milvus
+Custom services
+
+When should YOU use FAISS directly?
+Use FAISS if:
+
+✅ You want maximum performance
+✅ You control the infrastructure
+✅ You’re okay writing glue code
+✅ You don’t need complex filters
+
+Avoid FAISS if:
+
+❌ You want fast prototyping
+❌ You need metadata filters
+❌ You want managed scaling
+
+FAISS vs Vector DBs (truth table)
+| Feature        | FAISS | Vector DB |
+| -------------- | ----- | --------- |
+| ANN algorithms | ✅     | ✅         |
+| Metadata       | ❌     | ✅         |
+| Persistence    | ⚠️    | ✅         |
+| Scaling        | ❌     | ✅         |
+| Ease of use    | ❌     | ✅         |
+
+
+FAISS is the engine
+Vector DBs are the cars built on it
+
+🔑 Key takeaways
+FAISS = gold standard ANN library
+In-memory, ultra-fast
+Requires discipline (normalization, index rebuilds)
+Forms the foundation of many vector DBs
+Best for performance-critical systems
+
+Chroma DB
+(Developer-first vector database)
+
+1️⃣ What is Chroma?
+Chroma is an open-source vector database designed for:
+    Local development
+    Prototyping RAG systems
+    Metadata-heavy workflows
+    Tight integration with LLM frameworks
+Think of Chroma as:
+    FAISS + persistence + metadata + DX
+
+2️⃣ Why Chroma exists
+FAISS problems:
+    No metadata filtering
+    No persistence by default
+    No simple API
+    Easy to misuse
+Chroma solves:
+    Simple Python API
+    Automatic persistence
+    Metadata storage
+    Filters (where, where_document)
+    Seamless LangChain / LlamaIndex usage
+
+3️⃣ Chroma architecture (conceptual)
+Documents + Metadata
+        ↓
+Embedding Function
+        ↓
+Chroma Collection
+   ├─ Vectors
+   ├─ Metadata index
+   ├─ ANN index (HNSW)
+        ↓
+Similarity Search + Filters
+
+Internally:
+    Uses HNSW
+    Uses SQLite / DuckDB for metadata
+    Stores vectors on disk
+
+4️⃣ Core concepts in Chroma (very important)
+    1️⃣ Collection
+    A collection = logical namespace
+    Example:
+    collection = chroma_client.create_collection("docs")
+
+    Rule:
+    One embedding model per collection
+    Mixing embeddings = broken similarity.
+
+    2️⃣ Documents
+    Raw text chunks
+    documents = ["Reset the router...", "Check power cable..."]
+
+    3️⃣ Metadata
+    Structured filters
+    metadata = [
+    {"source": "manual", "page": 4},
+    {"source": "faq", "page": 1}
+    ]
+
+    4️⃣ IDs
+    User-defined or auto-generated
+    IDs must be:
+        Unique
+        Stable (important for updates)
+
+5️⃣ How Chroma search works
+Query pipeline
+    Query text
+    ↓
+    Embedding
+    ↓
+    HNSW ANN search
+    ↓
+    Metadata filter
+    ↓
+    Top-K documents
+
+
+Filtering happens after ANN narrowing, not before.
+
+6️⃣ Why metadata filtering matters (RAG reality)
+Real RAG questions:
+    “Only search logs from last week”
+    “Only config files”
+    “Only RU alarms”
+
+Without metadata:
+    ❌ Irrelevant chunks pollute context
+    ❌ LLM hallucinations increase
+
+Chroma makes metadata first-class, not an afterthought.
+
+7️⃣ Persistence model (what actually happens)
+
+Chroma: 
+    Writes vectors + metadata to disk
+    Reloads on restart
+    No manual save/load needed
+Tradeoff:
+    Slower than raw FAISS
+    But far safer
+
+8️⃣ Strengths of Chroma
+
+✅ Very easy to use
+✅ Great for RAG experiments
+✅ Metadata filtering built-in
+✅ Open source
+✅ Plays well with LangChain
+
+9️⃣ Limitations (important to know)
+
+❌ Not designed for massive scale
+❌ Single-node focus
+❌ Limited index customization
+❌ Not ideal for high-QPS production
+
+Chroma is:
+Dev & prototype DB — not infra-grade
+
+🔟 Chroma vs FAISS (practical view)
+Aspect	FAISS	Chroma
+Speed	🔥🔥🔥	🔥🔥
+Metadata	❌	✅
+Persistence	❌	✅
+Ease of use	❌	✅
+Scale	Huge (manual)	Small–Medium
+
+1️⃣1️⃣ When should YOU use Chroma?
+Use Chroma if:
+    You’re learning RAG
+    You want quick iteration
+    Dataset < few million chunks
+    Metadata matters
+Avoid Chroma if:
+    You need distributed search
+    You need strict latency SLOs
+    You expect heavy concurrency
+
+🔑 Key takeaways
+
+Chroma = developer-first vector DB
+Built on ANN (HNSW)
+Strong metadata support
+Perfect for learning & prototyping
+Not a FAISS replacement — a wrapper
+
+
+Vector DB Alternatives
+(Why so many exist & what problem each solves)
+All vector DBs solve similarity search, but they optimize different constraints:
+    Scale
+    Cost
+    Dev experience
+    Filtering
+    Cloud vs self-hosted
+
+1️⃣ Pinecone — Managed & production-ready
+Pinecone
+What Pinecone is
+    Fully managed vector DB (SaaS)
+    No infra to manage
+    Built for production RAG
+Why Pinecone exists
+Problem:
+    FAISS & open-source DBs need ops
+    Scaling ANN is hard
+    High availability is painful
+Pinecone solves:
+    Auto-scaling
+    Replication
+    Backups
+    High QPS(queries per second)
+    Global availability
+
+Strengths
+    ✅ Zero infra
+    ✅ High reliability
+    ✅ Metadata filtering
+    ✅ Fast ANN
+    ✅ Good for startups
+Weaknesses
+    ❌ Cost
+    ❌ Black-box internals
+    ❌ Vendor lock-in
+
+When to use Pinecone
+    Production RAG
+    Customer-facing apps
+    Teams without infra expertise
+
+2️⃣ Weaviate — Schema + Hybrid Search
+Weaviate
+What Weaviate is
+    Open-source vector DB
+    Strong schema support
+    Built-in hybrid search
+
+Key differentiator: Hybrid search
+    Keyword score + Vector score
+
+This helps when:
+    Keywords matter (IDs, error codes)
+    Semantic search alone fails
+
+Strengths
+    ✅ Hybrid search
+    ✅ Rich metadata filtering
+    ✅ Graph-like schema
+    ✅ Self-host or cloud
+
+Weaknesses
+    ❌ More complex
+    ❌ Higher learning curve
+    ❌ Slower than pure ANN engines
+
+When to use Weaviate
+    Mixed keyword + semantic search
+    Knowledge graphs
+    Enterprise schemas
+
+3️⃣ Milvus — Massive scale (infra-grade)
+Milvus
+What Milvus is
+    Distributed vector DB
+    Designed for billions of vectors
+    CNCF-backed
+Why Milvus exists
+Single-node DBs fail when:
+    Dataset grows huge
+    RAM is limited
+    QPS explodes
+Milvus solves:
+    Sharding
+    Replication
+    Disk-based ANN
+    Cloud-native deployments
+Strengths
+    ✅ Extreme scale
+    ✅ Multiple ANN algorithms
+    ✅ Cloud-native
+    ✅ Used by large enterprises
+Weaknesses
+    ❌ Heavy infra
+    ❌ Complex ops
+    ❌ Overkill for most RAGs
+When to use Milvus
+    Very large corpora
+    Enterprise / telecom scale
+    Strict SLA systems
+
+4️⃣ pgvector — SQL + vectors
+PostgreSQL + pgvector extension
+What pgvector is
+    Vector type inside PostgreSQL
+    ANN indexes (HNSW, IVF)
+    SQL-first approach
+Why pgvector exists
+Problem:
+    Teams already use PostgreSQL
+    Don’t want new DBs
+pgvector gives:
+    Vectors in SQL
+    Metadata joins
+    Transactions
+Strengths
+    ✅ Familiar SQL
+    ✅ ACID guarantees
+    ✅ Easy integration
+    ✅ Good for small–medium scale
+Weaknesses
+    ❌ Slower than dedicated engines
+    ❌ Limited ANN tuning
+    ❌ Not ideal for massive scale
+
+When to use pgvector
+    Existing PostgreSQL infra
+    Moderate vector counts
+    Heavy relational metadata
+
+5️⃣ Comparison table (truth, not marketing)
+| DB       | Best at         | Scale     | Ops    |
+| -------- | --------------- | --------- | ------ |
+| FAISS    | Raw speed       | Huge      | Manual |
+| Chroma   | Dev & RAG       | Small–Med | Easy   |
+| Pinecone | Prod SaaS       | Large     | Zero   |
+| Weaviate | Hybrid search   | Large     | Medium |
+| Milvus   | Massive scale   | Huge      | Heavy  |
+| pgvector | SQL integration | Small–Med | Easy   |
+
+6️⃣ Choosing wrong = bad RAG
+Common mistakes:
+    Pinecone for tiny experiments → 💸
+    Chroma for high-QPS prod → 🔥
+    Milvus for prototypes → 😵
+    FAISS without metadata → 🤯
+
+🔑 Key takeaways
+No “best” vector DB
+Choose based on:
+    Scale
+    Metadata needs
+    Infra maturity
+    Budget
+ANN algorithm matters more than branding
+
+
+
+When to Use What
+(Practical decision framework for Vector DBs)
+This section connects:
+    Scale
+    Latency
+    Cost
+    Metadata
+    Team maturity
+No theory. Only real-world choices.
+
+1️⃣ First question: How big is your data?
+A) Small (≤ 100k vectors)
+    Experiments
+    Learning RAG
+    Local tools
+    ✅ Best choices:
+        Chroma
+        PostgreSQL + pgvector
+        FAISS Flat
+    ❌ Avoid:
+        Milvus
+        Pinecone
+
+B) Medium (100k – 10M vectors)
+    Internal tools
+    Knowledge bases
+    AI assistants
+    ✅ Best choices:
+        FAISS (HNSW / IVF)
+        Chroma (upper bound)
+        pgvector (carefully)
+        Weaviate
+
+C) Large (10M – 1B+ vectors)
+    Search platforms
+    Customer-facing RAG
+    Enterprise AI
+    ✅ Best choices:
+        Pinecone
+        Milvus
+        FAISS + custom infra
+
+2️⃣ Second question: Do you need metadata filtering?
+❌ Minimal metadata
+Just similarity search
+Use:
+    FAISS
+    Pinecone (basic filters)
+✅ Heavy metadata filters
+Examples:
+    source type
+    time range
+    severity
+    component ID
+Use:
+    Chroma
+    Weaviate
+    Milvus
+    pgvector
+
+📌 RAG without metadata degrades fast.
+
+3️⃣ Third question: Production or experimentation?
+Experimentation / learning
+Goals:
+    Fast iteration
+    Easy debugging
+Use:
+    Chroma
+    pgvector
+    FAISS Flat
+Production systems
+Goals:
+    SLA(service level agreement)
+    Uptime
+    Scalability
+Use:
+    Pinecone
+    Milvus
+    Weaviate Cloud
+
+4️⃣ Fourth question: Infra & Ops maturity
+Low infra maturity
+    Small team
+    No SRE(site reliability engineering)
+    Use:
+        Pinecone
+        Managed Weaviate
+High infra maturity
+    Kubernetes
+    Monitoring
+    On-call
+Use:
+    Milvus
+    FAISS-based services
+    Self-hosted Weaviate
+
+5️⃣ Fifth question: Latency requirements
+| Latency Target | Recommendation      |
+| -------------- | ------------------- |
+| <10 ms         | FAISS HNSW          |
+| 10–50 ms       | Pinecone / Weaviate |
+| 50–200 ms      | Chroma / pgvector   |
+| Batch          | FAISS GPU           |
+
+
+6️⃣ Golden rules (don’t violate these)
+
+Rule 1️⃣
+    One embedding model per collection / index
+    Mixing models = meaningless similarity.
+Rule 2️⃣
+    Normalize if using cosine similarity
+    Always.
+Rule 3️⃣
+    Index choice matters more than DB brand
+    Bad index → bad RAG.
+Rule 4️⃣
+    Retrieval quality > model size
+    A smaller LLM + good retrieval
+    beats
+    a bigger LLM + bad retrieval.
+
+7️⃣ Typical real-world stacks
+Startup RAG
+    Embeddings → Pinecone → GPT
+
+Internal enterprise RAG
+    Embeddings → Weaviate → Re-ranker → LLM
+
+Research / offline
+    Embeddings → FAISS → Analysis
+
+SQL-heavy org
+    Embeddings → pgvector → LLM
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 PART C — RAG (Core System)
 
 13️⃣ RAG architecture
