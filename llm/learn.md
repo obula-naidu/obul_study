@@ -1945,6 +1945,868 @@ PART C — RAG (Core System)
 13.4 Context window budgeting
 13.5 Failure modes
 
+13️⃣ RAG Architecture (Big Picture)- Retrieval augumented generation
+RAG = Retrieval + Generation
+
+pipeline
+User Query
+   ↓
+Query Embedding
+   ↓
+Retriever (Vector / Hybrid Search)
+   ↓
+Relevant Chunks
+   ↓
+Augmented Prompt
+   ↓
+LLM Reasoning
+   ↓
+Grounded Answer
+
+Core promise of RAG
+    LLM does not store facts
+    LLM reasons over retrieved context
+    Knowledge becomes updateable without retraining
+This is why RAG is used in:
+    Log analysis
+    Internal docs QA
+    Config reasoning
+    RCA systems
+
+🔹 13.1 Chunking Strategies (FOUNDATION OF RAG)
+
+If chunking is wrong, nothing else in RAG matters — not embeddings, not vector DB, not LLM quality.
+
+1️⃣ What is Chunking (Precisely)
+Chunking = splitting source data into retrieval units
+A chunk is:
+    The atomic retrievable knowledge unit
+    The thing that gets:
+        embedded
+        stored
+        retrieved
+    injected into the prompt
+LLMs never see your original document — only chunks.
+
+
+2️⃣ Why Chunking Exists (Non-Negotiable Reasons)
+Reason 1: Context window limit
+    LLMs cannot ingest:
+        Full logs
+        Full PDFs
+        Full config trees
+    So we retrieve only relevant slices.
+
+Reason 2: Embeddings have semantic density limits
+    Embedding a very long text causes:
+        Topic dilution
+        Averaged meaning
+        Lower cosine similarity precision
+    Embeddings represent dominant meaning, not all meanings.
+
+Reason 3: Retrieval precision vs recall tradeoff
+| Chunk Size | Recall | Precision |
+| ---------- | ------ | --------- |
+| Too small  | ❌ low  | ❌ low     |
+| Ideal      | ✅ high | ✅ high    |
+| Too large  | ✅ high | ❌ low     |
+
+3️⃣ Chunking Dimensions (You MUST design all)
+Dimension A — Chunk Size (tokens)
+    Typical ranges (real systems):
+    | Use case           | Tokens  |
+    | ------------------ | ------- |
+    | FAQ / definitions  | 150–250 |
+    | Config explanation | 300–500 |
+    | Logs / RCA         | 400–700 |
+    | Legal / policy     | 500–900 |
+
+⚠️ Tokens ≠ words
+1 token ≈ 0.75 words (English)
+
+For optimal performance, chunk size should be tailored to the embedding model's limits and the specific use case, such as 128-256 tokens for high granularity or 512-1024 for broader context. 
+
+Dimension B — Overlap (MANDATORY)
+    Overlap prevents semantic amputation.
+    ex:
+    Chunk 1: tokens 0–400
+    Chunk 2: tokens 300–700
+    Overlap = 100 tokens
+
+    Why overlap matters
+        Definitions start in one chunk, end in next
+        Stack traces span boundaries
+        Cause–effect chains break without overlap
+
+    Rule of thumb:Overlap = 15–25% of chunk size
+
+Dimension C — Boundary Awareness (Most people miss this)
+    ❌ Naive chunking:
+        Split every N tokens blindly
+    ✅ Intelligent chunking:
+        Respect:
+            headings
+            paragraphs
+            log blocks
+            JSON objects
+            function boundaries
+
+
+4️⃣ Chunking Strategies (Types)
+
+    1️⃣ Fixed-Size Token Chunking (Baseline)
+    How it works
+        Split every N tokens
+        Add overlap
+    Pros
+        Simple
+        Fast
+        Deterministic
+    Cons
+        Breaks meaning
+        Splits logical units
+
+    🟡 Use only for:
+        Clean prose
+        Homogeneous text
+
+    2️⃣ Semantic Chunking (RECOMMENDED)
+    Split by meaning, not size.
+    Boundaries
+        Headings
+        Paragraphs
+        Bullet groups
+        Log sections
+        JSON objects
+    Then merge small units until size threshold.
+
+    Example
+    Heading: "OAM Failure Analysis"
+    ├─ Explanation paragraph
+    ├─ Error codes list
+    └─ Sample logs
+    → One chunk
+
+
+    3️⃣ Document-Structure Chunking (Production-grade)
+    Used for:
+        PDFs
+        RFCs
+        Config docs
+        Internal wikis
+    Chunk by:
+        Section → subsection → paragraph
+    Metadata added
+    {
+    "chunk_text": "...",
+    "section": "RU OAM",
+    "subsection": "Heartbeat Failure",
+    "doc": "5G_RU_Debug_Guide.pdf"
+    }
+    Metadata becomes retrieval superpower later.
+
+
+    4️⃣ Log-Aware Chunking
+    Logs are NOT text — they are temporal sequences.
+    ❌ Wrong:
+        Chunk by fixed tokens
+    ✅ Correct:
+    Chunk by:
+        time window
+        request ID
+        session ID
+        component boundary
+
+    [RU-123] INIT
+    [RU-123] CFG LOAD
+    [RU-123] ERROR
+    → One chunk
+
+    5️⃣ Hierarchical Chunking (Advanced)
+    Two layers:
+        Parent chunk (large context)
+        Child chunks (fine-grained)
+    Retrieval:
+        Retrieve child
+        Attach parent context
+    Used in:
+        Large manuals
+        Specifications
+        Design docs
+
+5️⃣ Metadata: The Hidden Weapon
+Each chunk should store:
+{
+  "text": "...",
+  "source": "RU_OAM_Guide",
+  "component": "FHGW",
+  "log_type": "ERROR",
+  "time_range": "12:00–12:05"
+}
+Later used for:
+    Filtering
+    Hybrid search
+    Reranking
+    Debug traceability
+
+6️⃣ Common Chunking Failure Modes
+    ❌ Failure 1: Chunks too small
+    Symptoms:
+        LLM hallucinates
+        Missing explanations
+        Shallow answers
+
+    ❌ Failure 2: Chunks too large
+    Symptoms:
+        Irrelevant retrieval
+        Wrong answers despite “correct” data
+
+    ❌ Failure 3: Meaning split across chunks
+    Symptoms:
+        Partial answers
+        Contradictory explanations
+
+    ❌ Failure 4: Logs chunked like prose
+    Symptoms:
+        LLM misses causal chain
+        RCA fails
+
+7️⃣ Production Rules
+
+✔ Chunk by meaning, not size
+✔ Always overlap
+✔ Logs ≠ documents
+✔ Metadata is not optional
+✔ Test retrieval before blaming LLM
+
+
+🔹 13.2 Retrieval Strategies (How RAG finds knowledge)
+
+Chunking decides what can be found
+Retrieval decides what is actually found
+
+Most RAG failures happen here, not in embeddings or prompting.
+
+1️⃣ What is Retrieval (Precisely)
+Retrieval = selecting the best subset of chunks for a query
+
+Formally:
+
+Given:
+- Query embedding Q
+- Stored chunk embeddings {C1, C2, … Cn}
+
+Find:
+- Subset S ⊂ C
+Such that:
+- S maximizes relevance to Q
+- |S| fits context budget
+
+Retrieval is a ranking + filtering problem, not just similarity search.
+
+2️⃣ Core Retrieval Pipeline
+User query
+   ↓
+Query preprocessing
+   ↓
+Query embedding
+   ↓
+Candidate retrieval
+   ↓
+Filtering (metadata, rules)
+   ↓
+Ranking
+   ↓
+Top-N chunks
+
+
+3️⃣ Retrieval Types (Foundational)
+
+    1️⃣ Vector Similarity Retrieval (Default)
+    How it works
+        Embed query
+        Compute similarity (cosine / dot product)
+        Return top-k closest chunks
+    Similarity metrics
+        Cosine similarity (most common)
+        Dot product (after normalization)
+        L2 distance (rare)
+
+    results = vector_db.search(
+        query_embedding,
+        top_k=5
+    )
+    ✅ Pros:
+    Semantic understanding
+    Synonyms work
+    Natural language friendly
+
+    ❌ Cons:
+    Misses exact terms
+    Struggles with IDs, error codes
+    Over-retrieves vague chunks
+
+    2️⃣ Keyword / Lexical Retrieval (BM25-style)
+    How it works
+        Match exact words
+        Score by frequency + rarity
+    Example
+    Query: "RU OAM heartbeat timeout error 504"
+
+    Keyword search beats vectors here.
+    ✅ Pros:
+        Exact matching
+        IDs, error codes, symbols
+        Deterministic
+    ❌ Cons:
+        No semantic understanding
+        Synonyms fail
+
+    3️⃣ Hybrid Retrieval (Vector + Keyword)
+    Production RAG always uses this
+
+    Two common patterns
+
+    Pattern A: Parallel
+        Vector search → top 20
+        Keyword search → top 20
+        Merge → deduplicate → rerank
+
+    Pattern B: Filter + Vector
+        Keyword filter (error=504)
+        → Vector similarity inside filtered set
+
+    Hybrid = best recall + best precision
+
+
+4️⃣ Top-K vs Threshold (CRITICAL DESIGN)
+
+Most people blindly use:
+    top_k = 5
+This is wrong.
+❌ Problem with fixed Top-K
+
+Case 1: Query has 1 relevant chunk
+    You still retrieve 5
+    4 are noise
+    LLM hallucinates
+Case 2: Query has 20 relevant chunks
+    You retrieve only 5
+    Missing context
+    Partial answers
+
+✅ Similarity Threshold Strategy
+Instead of top-k:
+Retrieve all chunks where similarity > 0.78
+Max cap = 12
+
+Benefits
+    Adaptive
+    Reduces noise
+    Improves grounding
+
+Hybrid approach (best)
+    Retrieve up to 15
+    Stop when similarity < threshold
+
+
+5️⃣ Query Preprocessing (Almost Everyone Misses This)
+
+    Before embedding the query, you should:
+    1️⃣ Normalize
+    Remove timestamps
+    Remove UUIDs
+    Lowercase
+    Expand abbreviations
+
+    "RU OAM HB fail @ 12:01"
+    → "radio unit oam heartbeat failure"
+
+    2️⃣ Decompose compound queries
+    User asks:
+    Why RU rebooted and OAM failed after config push?
+
+    This is two retrieval intents.
+    Split into:
+    RU reboot cause
+    OAM failure after config
+
+    (We’ll cover this deeply in Multi-query RAG later)
+
+
+
+6️⃣ Metadata Filtering (Superpower)
+
+Retrieval is NOT only embeddings.
+Example filters:
+{
+  "component": "RU",
+  "log_type": "ERROR",
+  "time_range": "after_config"
+}
+
+Why filters matter
+    Reduce search space
+    Increase precision
+    Improve speed
+    Prevent cross-component confusion
+
+In RAIN, this is gold:
+    Filter by snapshot
+    Filter by module
+    Filter by severity
+
+7️⃣ Retrieval Failure Modes (Learn to Diagnose)
+    ❌ Failure 1: High similarity, wrong answer
+    Cause:
+        Chunk is semantically similar but contextually wrong
+    Fix:
+        Better chunking
+        Add metadata filters
+        Re-ranking
+
+    ❌ Failure 2: Correct chunk not retrieved
+    Cause:
+        Chunk too larg
+        Query phrasing mismatch
+        No keyword match
+    Fix:
+        Hybrid search
+        Query rewriting
+        Smaller chunks
+
+    ❌ Failure 3: Too many irrelevant chunks
+    Cause:
+        Low threshold
+        Vague query
+        Poor embeddings
+    Fix:
+        Increase threshold
+        Query clarification
+        Re-ranker
+
+    ❌ Failure 4: Log retrieval breaks causality
+    Cause:
+        Logs retrieved out of order
+    Fix:
+        Time-aware retrieval
+        Group by session/request ID
+
+8️⃣Production Retrieval Rules
+
+✔ Never rely on vector search alone
+✔ Avoid fixed top-k
+✔ Use metadata aggressively
+✔ Logs need temporal grouping
+✔ Diagnose retrieval before touching prompts
+
+
+
+🔹 13.3 Augmented Prompting (Where RAG Actually Works or Fails)
+
+Retrieval gives knowledge
+Prompting gives control
+
+Augmented prompting decides:
+    whether the LLM uses retrieved context
+    whether it hallucinates
+    whether it reasons or just summarizes
+
+1️⃣ What is Augmented Prompting (Precisely
+Augmented prompting = injecting retrieved context into the LLM prompt in a controlled, structured way
+Formal definition:
+LLM(Input) = f(
+  system_instructions,
+  user_query,
+  retrieved_context,
+  reasoning_constraints
+)
+
+The LLM:
+does NOT know what is true
+does NOT know what is authoritative
+does NOT know what to ignore
+👉 You must tell it.
+
+2️⃣ The Naive Way (❌ Do NOT Do This)
+Most tutorials do this:
+Answer the question using the following context:
+<context>
+chunk1
+chunk2
+chunk3
+</context>
+
+Question: Why did RU OAM fail?
+Why this fails
+    No authority hierarchy
+    No grounding requirement
+    No conflict resolution
+    No refusal condition
+Result:
+    Partial grounding
+    Hallucinated glue
+    Overconfident answers
+
+3️⃣ Prompt Anatomy (Correct Mental Model)
+
+A production RAG prompt has 5 layers:
+
+1. System role (authority & behavior)
+2. Task definition (what to do)
+3. Context contract (rules for using context)
+4. Retrieved knowledge (chunks)
+5. User question
+
+We control each layer.
+
+4️⃣ Layer 1 — System Role (Authority Control)
+This defines who the model is and what it must NOT do.
+
+Example (RAIN-style)
+You are a diagnostic reasoning engine.
+You must:
+- Use ONLY the provided context
+- Avoid assumptions beyond the context
+- State explicitly when information is missing
+
+Why this matters:
+    Prevents “helpful hallucination”
+    Forces epistemic humility
+
+5️⃣ Layer 2 — Task Definition (Thinking Mode)
+
+Bad:
+Explain the issue.
+
+Good:
+Analyze the failure using causal reasoning.
+Identify:
+1. Trigger
+2. Propagation
+3. Root cause
+4. Evidence
+
+LLMs respond extremely differently to structured tasks.
+
+6️⃣ Layer 3 — Context Contract (MOST IMPORTANT)
+This is the RAG control layer.
+
+Mandatory rules to include
+Rules:
+- Treat the context as the only source of truth
+- If the answer is not present, say "Insufficient context"
+- Do not introduce external knowledge
+- Cite the chunk ID when stating facts
+
+This single block can reduce hallucinations by 50–70%.
+
+7️⃣ Layer 4 — Context Injection (Formatting Matters)
+
+❌ Bad formatting
+chunk1 text chunk2 text chunk3 text
+
+✅ Good formatting
+[CONTEXT]
+[Chunk ID: C1 | Source: RU_OAM_Guide]
+...
+
+[Chunk ID: C2 | Source: Logs | Time: 12:01–12:03]
+...
+[/CONTEXT]
+
+Why:
+    LLMs reason better with labels
+    Enables internal cross-referencing
+    Enables citations in output
+
+8️⃣ Layer 5 — User Question (Often Needs Rewriting)
+User question:
+    Why did OAM fail?
+Augmented question:
+    Based only on the context above, explain why OAM failed after the configuration push.
+
+You are allowed to rewrite queries internally.
+
+9️⃣ Prompt Template (Production-Grade)
+
+Here is a real template you can reuse:
+
+SYSTEM:
+You are a diagnostic analysis engine.
+You must only use the provided context.
+If the answer cannot be derived, state "Insufficient context".
+
+TASK:
+Perform root cause analysis.
+Structure the answer as:
+- Observation
+- Evidence
+- Reasoning
+- Conclusion
+
+CONTEXT RULES:
+- Use only the context below
+- Cite chunk IDs
+- Do not assume missing facts
+
+CONTEXT:
+[Chunk C1 | doc=RU_OAM]
+...
+[Chunk C2 | logs | time=12:01–12:03]
+...
+
+QUESTION:
+Why did the RU OAM heartbeat fail after config update?
+
+🔟 Context Ordering (People Miss This)
+Order affects reasoning.
+Best order
+    High-confidence facts
+    Logs / evidence
+    Background explanation
+Never mix logs randomly.
+
+11️⃣ Failure Modes in Augmented Prompting
+❌ Failure 1: LLM ignores context
+    Cause:
+        Weak system instruction
+        Vague task
+    Fix:
+        Explicit grounding rules
+        “Use ONLY context” language
+
+❌ Failure 2: Hallucinated explanations
+Cause:
+    Context insufficient
+    Prompt allows guessing
+Fix:
+    Add refusal rule
+    Add “state uncertainty” requirement
+
+❌ Failure 3: Over-summarization
+Cause:
+    Task too generic
+Fix:
+    Force reasoning steps
+    Force evidence citation
+
+❌ Failure 4: Conflicting chunks confuse LLM
+Cause:
+    No conflict resolution rule
+Fix:
+Add:
+    If chunks conflict, prefer logs over documentation.
+
+12️⃣  Production Rules (Memorize)
+
+✔ Prompting cannot fix bad retrieval
+✔ Context must have authority rules
+✔ Labels > raw text
+✔ Always allow “insufficient context”
+✔ Reasoning > summarization
+
+
+
+
+🔹 13.4 Context Window Budgeting (The Invisible Bottleneck)
+
+RAG is not “retrieve everything”
+RAG is “fit the right things into a tiny box”
+
+Context budgeting is systems engineering, not prompting.
+
+1️⃣ What Is Context Window Budgeting (Precisely)
+Every LLM has a maximum token window:
+system + instructions + context + question + answer ≤ MAX TOKENS
+
+If you exceed it:
+    context is truncated
+    instructions get dropped
+    reasoning quality collapses silently
+⚠️ The model does NOT warn you reliably.
+
+2️⃣ Why Context Budgeting Matters
+Real production symptoms
+    Answers suddenly worse after adding “just one more chunk”
+    Logs ignored
+    Hallucinations increase
+    Cost spikes
+These are budgeting failures, not model failures.
+
+3️⃣ Token Budget Breakdown (Mandatory Accounting)
+Let’s assume:
+Model context window = 8,000 tokens
+You must pre-allocate:
+
+| Component         | Tokens      |
+| ----------------- | ----------- |
+| System + rules    | 300–500     |
+| Task instructions | 200–400     |
+| Retrieved context | 4,000–5,000 |
+| User question     | 50–100      |
+| Model answer      | 1,500–2,000 |
+
+⚠️ Most people forget to reserve answer space.
+
+4️⃣ Context Packing Strategy (Core Skill)
+You cannot blindly append chunks.
+You must pack context.
+Strategy 1️⃣ — Rank + Trim
+        Rank chunks by relevance
+        Add in order
+        Stop when budget reached
+
+    budget = 4500
+    used = 0
+    selected = []
+
+    for chunk in ranked_chunks:
+        if used + chunk.tokens > budget:
+            break
+        selected.append(chunk)
+        used += chunk.tokens
+
+Strategy 2️⃣ — Summarize Low-Value Chunks
+    High-value chunks:
+        Logs
+        Evidence
+        Error descriptions
+    Low-value chunks:
+        Background
+        Definitions
+    Summarize background offline before injection.
+
+Strategy 3️⃣ — Compress, Don’t Delete
+    Instead of:
+        removing chunks
+    Do:
+        compress them
+    Example:
+        Original: 400 tokens
+        Compressed: 120 tokens
+
+Still keeps signal.
+
+5️⃣ Sliding Context Windows (Advanced)
+Used when:
+    Logs are long
+    Timelines matter
+Pattern:
+    Retrieve most relevant window
+    Answer
+    If insufficient, shift window
+This is manual pagination, not automatic.
+
+6️⃣ Context Ordering Rules (Very Important)
+LLMs exhibit recency bias.
+Best ordering
+    Instructions
+    High-confidence facts
+    Logs / evidence
+    Background info
+Never:
+    Put critical logs at the end
+    Mix unrelated chunks
+
+7️⃣ Context Window Failure Modes
+    ❌ Failure 1: Silent truncation
+    Cause:
+        No token counting
+    Fix:
+        Count tokens before sending
+        Enforce hard caps
+
+    ❌ Failure 2: Important chunks dropped
+    Cause:
+        Equal weighting
+    Fix:
+        Priority-based packing
+
+    ❌ Failure 3: Context overwhelms reasoning
+    Cause:
+        Too much noise
+    Fix:
+        Aggressive pruning
+        Summarization
+
+    ❌ Failure 4: Costs explode
+    Cause:
+        Large repeated context
+    Fix:
+        Cache summaries
+        Reuse embeddings
+
+8️⃣ Production Budgeting Rules
+
+✔ Always reserve answer tokens
+✔ Count tokens programmatically
+✔ Rank before packing
+✔ Summarize background
+✔ Logs > docs > definitions
+
+
+13.5 Failure Modes (End-to-End RAG Debugging)
+
+RAG is a pipeline, not a model
+Failures propagate — they don’t stay local
+
+If you can diagnose failures, you are no longer a beginner.
+
+1️⃣ The RAG Failure Stack (Mental Model)
+
+Think in layers:
+
+User Intent
+  ↓
+Query Processing
+  ↓
+Chunking
+  ↓
+Embedding
+  ↓
+Retrieval
+  ↓
+Context Packing
+  ↓
+Prompting
+  ↓
+LLM Reasoning
+
+2️⃣ Failure Classifications
+We classify failures by symptom, not by component.
+RAG Debugging Playbook (Step-by-Step)
+
+When an answer is wrong:
+
+Step 1: Freeze the pipeline
+    Log query
+    Log retrieved chunks
+    Log final prompt
+Step 2: Ask:
+    “Could a human answer this using only this context?”
+    If no → retrieval or chunking bug
+Step 3: Swap LLM
+    If answer changes wildly → prompt ambiguity
+    If same → upstream issue
+Step 4: Over-retrieve
+    Top-20, no threshold
+    Inspect manually
+Step 5: Fix ONE layer only
+    Never tweak everything at once.
+
+Golden Rules (Non-Negotiable)
+
+✔ If retrieval is wrong, stop
+✔ If context is weak, stop
+✔ If prompt allows guessing, stop
+✔ Bigger models do not fix bad pipelines
+
+
+
+
+
+
 PART D — Advanced RAG (Production)
 
 14️⃣ Improvements & alternatives
