@@ -2804,9 +2804,6 @@ Golden Rules (Non-Negotiable)
 
 
 
-
-
-
 PART D — Advanced RAG (Production)
 
 14️⃣ Improvements & alternatives
@@ -2815,7 +2812,551 @@ PART D — Advanced RAG (Production)
 14.3 Multi-query RAG
 14.4 Agentic RAG
 14.5 RAG vs Fine-tuning
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+🔹 14.1 Hybrid Search (Vector + Keyword = Reality)
+
+Pure vector search is not enough
+Pure keyword search is brittle
+Hybrid search is how production RAG actually works
+
+1️⃣ What Is Hybrid Search (Precisely)
+Hybrid search = combining semantic similarity with lexical matching
+Formally:
+Relevance = f(semantic_similarity, keyword_match, metadata_filters)
+
+It answers both questions:
+“What does this mean?”
+“Does this contain exactly this thing?”
+
+2️⃣ Why Vector-Only RAG Fails in Production
+Vector embeddings are bad at:
+Error codes (504, 0x8f)
+IDs (RU-123, CELL_45)
+Version strings (v21.3.7)
+Log constants (HB_TIMEOUT)
+
+Example:
+Query: "error 504 after cfg push"
+Vector search often retrieves:
+    “network failure explanation”
+    “timeout overview”
+❌ But misses the actual log with 504.
+
+3️⃣ Why Keyword-Only Search Also Fails
+Keyword search is bad at:
+    Synonyms
+    Rephrasing
+    Natural language questions
+Query:
+"Why did the radio unit stop responding?"
+Keyword search misses:
+    “RU heartbeat timeout”
+    “OAM link lost”
+
+4️⃣ Hybrid Search Solves Both
+Hybrid search:
+    Uses keywords for precision
+    Uses vectors for meaning
+This is not optional in serious systems.
+
+5️⃣ Core Hybrid Search Patterns (VERY IMPORTANT)
+
+    🟢 Pattern 1: Parallel Retrieval (Most Common)
+        Vector Search → Top 20
+        Keyword Search → Top 20
+        Merge → Deduplicate → Rank
+    Pros
+        High recall
+        Simple to implement
+    Cons
+        Needs reranking
+        More compute
+
+    🟢 Pattern 2: Keyword Filter → Vector Search (Best for Logs)
+        Keyword filter: error=504, component=RU
+        ↓
+        Vector search inside filtered set
+    Pros
+        Very high precision
+        Faster
+        Excellent for RCA
+    Cons
+        Requires good metadata
+
+    🟢 Pattern 3: Weighted Scoring (Advanced)
+        Each chunk gets a score:
+            final_score =
+            0.6 * vector_similarity +
+            0.3 * keyword_score +
+            0.1 * metadata_match
+        Used when:
+            You want fine-grained control
+            You have evaluation data
+
+6️⃣ Hybrid Search with Metadata (Secret Weapon)
+Metadata dramatically boosts hybrid search.
+
+Example metadata:
+{
+  "component": "RU",
+  "severity": "ERROR",
+  "phase": "post_config",
+  "log_type": "OAM"
+}
+
+Query pipeline:
+    Metadata filter
+    Keyword match
+    Vector similarity
+    Rerank
+This is how real systems work.
+
+7️⃣ Concrete Example (End-to-End)
+Query
+Why did RU OAM fail after config update with error 504?
+
+Step 1: Keyword extraction
+    ["RU", "OAM", "504", "config"]
+
+Step 2: Metadata filter
+    component = RU
+    severity = ERROR
+
+Step 3: Keyword retrieval
+    Find logs with:
+        ERROR 504 OAM
+Step 4: Vector search
+    Find semantically related chunks:
+        “heartbeat failure”
+        “post-config restart”
+Step 5: Merge + rank
+    Result:
+        Exact log evidence
+        Supporting explanation
+        Background cause
+        This is grounded RCA.
+
+8️⃣ Hybrid Search Failure Modes
+    ❌ Failure 1: Keywords dominate everythin
+    Symptom:
+        Exact matches but wrong context
+    Fix:
+        Lower keyword weight
+        Add semantic reranking
+
+    ❌ Failure 2: Vectors dominate everything
+    Symptom:
+        Nice explanations, wrong evidence
+    Fix:
+        Enforce keyword presence for logs
+        Add hard filters
+
+    ❌ Failure 3: Over-filtering
+    Symptom:
+        No results
+    Fix:
+        Progressive relaxation
+    Fallback to vector-only
+
+9️⃣ Production Rules (Tattoo These)
+
+✔ Logs → keyword first
+✔ Docs → vector first
+✔ Always combine both
+✔ Metadata > embeddings
+✔ Hybrid is not optional
+
+
+
+🔹 14.2 Re-ranking (Turning Recall into Precision)
+Retrieval finds candidates
+Re-ranking decides truth
+
+Most systems retrieve too much.
+Re-ranking decides what the LLM should actually see.
+
+1️⃣ What Is Re-ranking (Precisely)
+Re-ranking = re-ordering retrieved chunks using a stronger relevance signal
+Pipeline change:
+
+Query
+ → Retriever (fast, approximate)
+ → 20–100 candidates
+ → Re-ranker (slow, precise)
+ → Top-N chunks
+ → Prompt
+
+Think of retrieval as:
+    Broad net
+Re-ranking as:
+    Sharp knife
+
+2️⃣ Why Re-ranking Exists
+Vector search is:
+    Approximate
+    High-recall
+    Low-precision at top ranks
+Problem:
+    Top-5 often contains noise
+    The best chunk is often ranked #7 or #12
+Re-ranking fixes this.
+
+3️⃣ Types of Re-ranking (Important Taxonomy)
+    1️⃣ Cross-Encoder Re-ranking (Gold Standard)
+    How it works
+        Feed (query, chunk) together into a model
+        Score relevance jointly
+    Unlike embeddings:
+        Query and chunk interact token-by-token
+
+    Example 
+    input:
+        [CLS] Why did RU OAM fail? [SEP]
+        ERROR 504 OAM heartbeat timeout after config push...
+    Output:
+        Relevance score = 0.92
+
+    ✅ Pros:
+        Extremely accurate
+        Best for RCA, QA
+    ❌ Cons:
+        Slow
+        Expensive
+        Cannot scale to thousands
+        Used only on top candidates.
+
+    2️⃣ LLM-based Re-ranking (Very Powerful)
+    Instead of a small model, use an LLM:
+    Prompt:
+        Rank the following chunks by relevance to the question.
+        Return chunk IDs in order.
+    LLM reasons about:
+        Semantics
+        Temporal order
+        Causality
+        Evidence strength
+    ✅ Pros:
+        Best reasoning
+        Handles complex queries
+    ❌ Cons:
+        Cost
+        Latency
+        Needs careful prompting
+    Used when:
+        Accuracy > latency
+        Debugging / RCA systems
+
+    3️⃣ Heuristic Re-ranking (Cheap & Effective)
+    Rule-based scoring:
+    score =
+    +2 if contains error code
+    +1 if contains component name
+    +1 if log severity = ERROR
+    -1 if doc is generic
+
+    Surprisingly effective when combined with vectors.
+
+4️⃣ Typical Re-ranking Pipeline (Production)
+    Initial retrieval (hybrid) → top 50
+    ↓
+    Heuristic filter → top 30
+    ↓
+    Cross-encoder / LLM → top 5
+    ↓
+    Context packing
+
+This is industry standard.
+
+5️⃣ Re-ranking Signals You Should Use
+Good re-ranking considers:
+
+| Signal                     | Why            |
+| -------------------------- | -------------- |
+| Query-chunk semantic match | Core relevance |
+| Keyword overlap            | Precision      |
+| Error code presence        | Evidence       |
+| Time proximity             | Causality      |
+| Component match            | Scope          |
+| Severity                   | Priority       |
+
+
+6️⃣ Example: Without vs With Re-ranking
+Without re-ranking
+Top-5:
+    OAM overview
+    Heartbeat explanation
+    Generic timeout doc
+    RU architecture
+    Actual error log ❌
+
+With re-ranking
+Top-5:
+    ERROR 504 log ✅
+    Preceding warning log
+    Post-config failure log
+    Heartbeat mechanism explanation
+    Recovery procedure
+Same data.
+Different answer quality.
+
+7️⃣ Failure Modes in Re-ranking
+❌ Failure 1: Re-ranker overfits semantics
+Symptom:
+    Picks explanations over evidence
+Fix:
+    Boost logs
+    Penalize generic docs
+
+❌ Failure 2: Re-ranker too slow
+Symptom:
+    Latency spikes
+Fix:
+    Reduce candidate count
+    Cache scores
+    Use heuristic pre-filter
+
+❌ Failure 3: Re-ranker conflicts with retriever
+Symptom:
+    Re-ranking reshuffles irrelevant chunks
+Fix:
+    Improve retrieval recall first
+    Re-ranking cannot fix missing data
+
+8️⃣When to Use Re-ranking (Rules)
+
+✔ Always when accuracy matters
+✔ Always for logs & RCA
+✔ Always if top-k > 5
+✔ Never as a replacement for retrieval
+
+9️⃣ Production Rules (Memorize)
+
+✔ Retrieval = recall
+✔ Re-ranking = precision
+✔ Re-ranking can’t fix missing chunks
+✔ Logs > docs in ranking
+✔ Accuracy is layered, not magical
+
+🔹 14.3 Multi-Query RAG 
+What it is
+Multi-Query RAG means running multiple retrieval queries for one user question instead of relying on a single embedding.
+Why:
+    One query often misses relevant chunks
+    Different phrasings retrieve different results
+
+Why single-query RAG fails
+User question:
+    Why did the system fail after configuration update?
+This actually contains multiple intents:
+    failure cause
+    configuration impact
+    timing (“after”)
+One vector embedding cannot represent all of this well.
+
+How Multi-Query RAG works
+User query
+ → Generate 3–5 related queries
+ → Retrieve for each query
+ → Merge + deduplicate
+ → Re-rank
+ → Send best chunks to LLM
+
+Types of Multi-Query RAG
+1️⃣ Paraphrase queries
+    Different wordings of the same intent:
+        “system failure after config”
+        “post-configuration error”
+        “configuration caused failure”
+    Improves semantic recall.
+2️⃣ Decomposed queries
+    Split into sub-questions:
+        “What caused the failure?”
+        “What happened after configuration update?”
+    Improves coverage.
+3️⃣ Perspective-based queries
+    Different angles:
+        error-focused
+        timeline-focused
+        component-focused
+    Improves diagnostic depth.
+
+How many queries?
+    3–5 is ideal
+    More than that adds noise
+    Re-ranking protects precision
+Common failure modes
+    Too many queries → context overflow
+    Redundant queries → no benefit
+    No re-ranking → noisy results
+When to use Multi-Query RAG
+    ✅ Complex questions
+    ✅ “Why / How / After” questions
+    ✅ Root-cause or analysis tasks
+
+    ❌ Simple fact lookup
+    ❌ Very short, exact queries
+
+🔹 14.4 Agentic RAG
+What is Agentic RAG?
+Agentic RAG is when an LLM controls the retrieval process itself, instead of doing retrieval just once.
+Normal RAG:
+    Retrieve once → Answer
+Agentic RAG:
+    Think → Retrieve → Check → Retrieve again → Answer
+
+The model decides:
+    what to search next
+    whether more context is needed
+    when to stop
+Why Agentic RAG exists
+    Single-pass RAG fails when:
+        the question is ambiguous
+        the first retrieval is insufficient
+        reasoning requires multiple steps
+    Agentic RAG adds feedback loops.
+
+Core Agent Behaviors
+1️⃣ Self-questioning
+    The model asks:
+        “Do I have enough information?”
+        “What is missing?”
+2️⃣ Iterative retrieval
+    If context is weak:
+        generate new queries
+        retrieve again
+3️⃣ Verification
+    Before answering:
+        check consistency
+        detect gaps or conflicts
+
+Simple Agentic RAG Flow
+User question
+ → Initial retrieval
+ → LLM evaluates context
+ → If insufficient:
+      generate new query
+      retrieve again
+ → Final answer
+
+Example
+Question:
+    Why did the system fail after update?
+Agent behavior:
+    Retrieve failure logs
+    Realize update details missing
+    Retrieve update-related docs
+    Combine and answer
+
+When to use Agentic RAG
+    ✅ Complex “why / how” questions
+    ✅ Multi-step reasoning
+    ✅ Investigation / analysis tasks
+
+    ❌ Simple factual Q&A
+    ❌ Low-latency systems
+
+Common failure modes
+    Infinite loops (keeps retrieving)
+    Over-retrieval (context bloat)
+    High latency / cost
+Guardrails you need
+    Max iterations (e.g., 2–3)
+    Context budget limits
+    Clear stop conditions
+One-line takeaway
+    Agentic RAG lets the model decide when and how to retrieve, instead of assuming one retrieval is enough.
+
+
+
+🔹 14.5 RAG vs Fine-Tuning (When to Use What)
+Core difference (one line)
+    RAG = fetch knowledge at runtime
+    Fine-tuning = bake behavior into the model
+They solve different problems.
+
+RAG (Retrieval-Augmented Generation)
+What it’s good at
+    Using external, changing knowledge
+    Grounded answers with citations
+    Large document sets
+    Fast updates (no retraining)
+What it changes
+    Input context, not model weights
+Strengths
+    Fresh data
+    Lower risk
+    Easier to debug
+    Scales to large corpora
+Weaknesses
+    More system complexity
+    Depends on retrieval quality
+    Latency from search
+
+Fine-Tuning
+What it’s good at
+    Consistent style
+    Task behavior (format, tone, reasoning pattern)
+    Domain-specific phrasing
+What it changes
+    Model weights
+Strengths
+    Very stable outputs
+    Low latency
+    No retrieval needed
+Weaknesses
+    Knowledge becomes stale
+    Expensive to update
+    Harder to debug
+    Risk of overfitting
+
+| Dimension            | RAG                 | Fine-tuning |
+| -------------------- | ------------------- | ----------- |
+| Knowledge updates    | Easy                | Hard        |
+| Factual accuracy     | High (if retrieved) | Risky       |
+| Behavior consistency | Medium              | High        |
+| Latency              | Higher              | Lower       |
+| Debuggability        | High                | Low         |
+| Cost to update       | Low                 | High        |
+
+
+
+The correct rule (important)
+
+Never fine-tune facts.
+Never use RAG to fix behavior.
+
+Best practice (what strong systems do)
+✅ Combine both
+Fine-tune for:
+    output format
+    reasoning style
+    refusal behavior
+RAG for:
+    facts
+    documents
+    logs
+    policies
+This is the industry standard.
+
+Decision cheat-sheet
+Use RAG if:
+    Data changes
+    You need traceability
+    You care about correctness
+Use fine-tuning if:
+    Task is stable
+    Output format must be exact
+    You want consistent behavior
+Use both if:
+    You’re building a serious system
+
+Final one-liner
+RAG gives the model knowledge.
+Fine-tuning gives the model discipline.
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
 PHASE 5: Agents (RAIN / AIRA level)
 
 Goal: Production AI systems
